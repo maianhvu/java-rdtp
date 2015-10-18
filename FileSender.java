@@ -56,12 +56,13 @@ public class FileSender extends ThreadedRunnable {
    */
   public void run() {
     if (!this.valid) return;
-    // Start factory
+
+    // Prepare factory
     final Factory factory = new Factory(this.idNo, this.inStream, this.socket, this.target);
     ArrayList<Thread> runners = new ArrayList<>();
 
+    // Start factory
     for (int i = 0; i < THREADS_COUNT; i++) {
-
       // Producers
       ProducerRunnable producer = new ProducerRunnable(i+1, factory);
       runners.add(producer.getThread());
@@ -71,22 +72,14 @@ public class FileSender extends ThreadedRunnable {
       ConsumerRunnable consumer = new ConsumerRunnable(i+1, factory);
       runners.add(consumer.getThread());
       consumer.start();
-
     }
 
     // Wait for all runners to finish
+    // and then close stream
     try {
-      for (Thread runner : runners) {
-        runner.join();
-      }
-    } catch (InterruptedException e) {
-      e.printStackTrace();
-    }
-
-    try {
-      // Close stream finally
+      for (Thread runner : runners) runner.join();
       this.inStream.close();
-    } catch (IOException e) {
+    } catch (IOException|InterruptedException e) {
       e.printStackTrace();
     }
   }

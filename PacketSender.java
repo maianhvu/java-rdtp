@@ -4,7 +4,7 @@ import java.util.*;
 
 public class PacketSender extends TimerTask {
 
-  public static final int TIMEOUT = 1000; // 2 millis
+  public static final int TIMEOUT = 1; // 1 millis
 
   private DatagramPacket packet;
   private DatagramSocket socket;

@@ -62,10 +62,6 @@ public class ConsumerRunnable extends ThreadedRunnable {
 
       this.factory.notEmpty.release();
 
-      // DEBUG
-      System.out.printf("Consumer %d stopped!\n", this.id);
-      this.factory.printState();
-
     } catch (IOException|InterruptedException e) {
       e.printStackTrace();
       this.factory.rescue(this.factory.bufMutex);
