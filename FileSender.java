@@ -1,7 +1,10 @@
 import java.io.*;
 import java.net.*;
+import java.util.*;
 
 public class FileSender extends ThreadedRunnable {
+
+  public static final int THREADS_COUNT = 8;
 
   /**
    * Properties
@@ -11,13 +14,13 @@ public class FileSender extends ThreadedRunnable {
   private DatagramSocket socket;
   private int idNo;
   private int seqNo;
-  private int lastAcked;
   private boolean valid;
 
   /**
    * Constructor
    */
   public FileSender(String host, int port, String inFile, String outFile) {
+
     try {
       // Get the remote address
       this.target = new InetSocketAddress(host, port);
@@ -53,42 +56,34 @@ public class FileSender extends ThreadedRunnable {
    */
   public void run() {
     if (!this.valid) return;
-    // Initialize prerequisites
-    this.seqNo = 1;
-    byte[] buffer = new byte[PacketService.PACKET_SIZE - PacketService.HEADER_SIZE];
-    int length;
+    // Start factory
+    final Factory factory = new Factory(this.idNo, this.inStream, this.socket, this.target);
+    ArrayList<Thread> runners = new ArrayList<>();
+
+    for (int i = 0; i < THREADS_COUNT; i++) {
+
+      // Producers
+      ProducerRunnable producer = new ProducerRunnable(i+1, factory);
+      runners.add(producer.getThread());
+      producer.start();
+
+      // Consumers
+      ConsumerRunnable consumer = new ConsumerRunnable(i+1, factory);
+      runners.add(consumer.getThread());
+      consumer.start();
+
+    }
+
+    // Wait for all runners to finish
+    try {
+      for (Thread runner : runners) {
+        runner.join();
+      }
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    }
 
     try {
-      while ((length = this.inStream.read(buffer)) > 0) {
-        DatagramPacket packet = PacketService.data(this.seqNo, this.idNo, this.target, buffer);
-        PacketSender sender = new PacketSender(packet, this.socket);
-        sender.start();
-
-        while (true) {
-          DatagramPacket reply = PacketService.receive(this.socket);
-          PacketData data = PacketService.unwrap(reply);
-          if (data.isValid() && data.isAck() && data.getID() == this.idNo && data.getOrder() == this.seqNo) {
-            sender.resolve();
-            break;
-          }
-        }
-
-        this.seqNo++;
-      }
-      // Dispatch terminate signal
-      DatagramPacket term = PacketService.ack(this.seqNo, this.idNo, this.target);
-      PacketSender sender = new PacketSender(term, this.socket);
-      sender.start();
-
-      while (true) {
-        DatagramPacket reply = PacketService.receive(this.socket);
-        PacketData data = PacketService.unwrap(reply);
-        if (data.isValid() && data.isAck() && data.getID() == this.idNo && data.getOrder() == this.seqNo) {
-          sender.resolve();
-          break;
-        }
-      }
-
       // Close stream finally
       this.inStream.close();
     } catch (IOException e) {

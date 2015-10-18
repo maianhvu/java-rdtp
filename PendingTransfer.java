@@ -4,19 +4,29 @@ import java.util.concurrent.*;
 
 public class PendingTransfer {
 
+  /**
+   * Properties
+   */
   private PriorityQueue<PacketData> packetQueue;
   private TreeSet<Integer> receivedSet;
+
   private String outFileName;
   private BufferedOutputStream outStream;
+
   private int lastAcked;
   private Semaphore ackMutex;
   private Semaphore termSem;
 
+  /**
+   * Constructor
+   */
   public PendingTransfer(String fileName) throws IOException {
     this.outFileName = fileName;
+    this.outStream = new BufferedOutputStream(new FileOutputStream(new File(this.outFileName)));
+
     this.packetQueue = new PriorityQueue<>();
     this.receivedSet = new TreeSet<>();
-    this.outStream = new BufferedOutputStream(new FileOutputStream(new File(this.outFileName)));
+
     this.lastAcked = 0;
     this.ackMutex = new Semaphore(1);
     this.termSem = new Semaphore(0);
@@ -30,6 +40,9 @@ public class PendingTransfer {
     // Try to write if the packet arrived matches the one that
     // we are waiting for
     try {
+      // Enter critical section
+      this.ackMutex.acquire();
+
       //---START OF WHILE LOOP
       while (this.packetQueue.size() > 0 && this.packetQueue.peek().getOrder() == this.lastAcked + 1) {
         PacketData pktData = this.packetQueue.poll();
@@ -45,11 +58,19 @@ public class PendingTransfer {
         this.lastAcked++;
       }
       //--END OF WHILE LOOP
-    } catch (IOException e) {
+
+      // Leave critical section
+      this.ackMutex.release();
+
+    } catch (InterruptedException e) {
       e.printStackTrace();
+      if (this.ackMutex.availablePermits() == 0) this.ackMutex.release();
     }
   }
 
+  /**
+   * Getters for external objects
+   */
   public String getOutputFileName() { return this.outFileName; }
   public Semaphore getTerminateSemaphore() { return this.termSem; }
 
