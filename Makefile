@@ -9,6 +9,9 @@ CLASSES = \
 	FileReceiver.java \
 	MetaPacket.java \
 	PacketSender.java \
+	PacketFactory.java \
+	PacketCheckpoint.java \
+	PendingTransfer.java \
 	ThreadedRunnable.java \
 	Debugger.java
 

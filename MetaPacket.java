@@ -1,8 +1,10 @@
+import java.io.*;
 import java.net.*;
 import java.nio.*;
+import java.util.*;
 import java.util.zip.CRC32;
 
-public class MetaPacket {
+public class MetaPacket implements Comparable<MetaPacket> {
 
     /**
      * Constants
@@ -35,6 +37,8 @@ public class MetaPacket {
     private byte[] rawData;
     private InetSocketAddress address;
     private DatagramPacket packet;
+
+    private byte[] data;
 
     /**
      * Private constructors to be used by static generators
@@ -158,7 +162,7 @@ public class MetaPacket {
      * @param type The specific type of packet to expect, null for wildcard
      * @return The MetaPacket object containing the information about the reply packet
      */
-    public static MetaPacket expectReply(DatagramSocket receiver, Type type) throws IOException {
+    public static MetaPacket expectReply(DatagramSocket receiver, EnumSet<Type> types) throws IOException {
         // Instantiate the MetaPacket object
         MetaPacket meta = new MetaPacket();
         // Set data buffer
@@ -169,11 +173,70 @@ public class MetaPacket {
             receiver.receive(meta.packet);
             // Discard small packet
             if (meta.packet.getLength() < HEADER_SIZE) continue;
-            // Prepare to unwrap
-            Debugger.printArray(meta.rawData);
-            break;
+
+            // Catch BufferUnderflowException
+            try {
+
+                // Read in packet size
+                ByteBuffer buffer = ByteBuffer.wrap(meta.rawData);
+                long checksum = buffer.getLong();
+                meta.size = buffer.getInt();
+                // Skip corrupted length
+                if (meta.size > MAX_PACKET_SIZE || meta.size < HEADER_SIZE) {
+                    System.out.printf("Info: Packet size too small (%d)\n", meta.size);
+                    continue;
+                }
+
+                // Checksum
+                CRC32 crc = new CRC32();
+                crc.reset();
+                crc.update(meta.rawData, CHECKSUM_LENGTH, meta.size - CHECKSUM_LENGTH);
+                // Checksum mismatch, skip
+                if (crc.getValue() != checksum) {
+                    System.out.printf("Info: Checksum mismatch\n\tExpected: %d\n\tActual: %d\n", crc.getValue(), checksum);
+                    continue;
+                }
+
+                // Read in sequence number
+                meta.sequenceNumber = buffer.getInt();
+
+                // Read in flags
+                int flags = buffer.getInt();
+                meta.idNumber = flags & FLAGS_ID_MASK;
+                int typeID = flags >>> 30;
+                meta.type = Type.values()[typeID];
+
+                // Check if type is to be expected
+                if (types != null && !types.contains(meta.type)) {
+                    System.out.printf("Info: Expected types %s but got %s, discard\n",
+                            types.toString(), meta.type.name());
+                    continue;
+                }
+
+                // Resize packet if needed: if is neither ACK or NAK
+                // and if the size differs
+                if (typeID <= 1 && meta.size != meta.rawData.length) {
+                    byte[] newData = new byte[meta.size];
+                    System.arraycopy(meta.rawData, 0, newData, 0, newData.length);
+                    // Save buffer offset
+                    int offset = buffer.position();
+                    // Update new data and new buffer
+                    meta.rawData = newData;
+                    buffer = ByteBuffer.wrap(meta.rawData);
+                    buffer.position(offset);
+                }
+
+                // Set address
+                meta.address = (InetSocketAddress) meta.packet.getSocketAddress();
+
+                return meta;
+
+            } catch (BufferUnderflowException e) {
+                // Buffer underflow, corrupted packet!
+                e.printStackTrace();
+                continue;
+            }
         }
-        return null; // stub
     }
 
     public static MetaPacket expectReply(DatagramSocket receiver) throws IOException { return expectReply(receiver, null); }
@@ -188,4 +251,75 @@ public class MetaPacket {
     public DatagramPacket getPacket() { return this.packet; }
     public InetSocketAddress getAddress() { return this.address; }
 
+    public boolean isPreflight() { return this.type == MetaPacket.Type.PREFLIGHT; }
+    public boolean isData() { return this.type == MetaPacket.Type.DATA; }
+    public boolean isACK() { return this.type == MetaPacket.Type.ACK; }
+    public boolean isNAK() { return this.type == MetaPacket.Type.NAK; }
+
+    //-------------------------------------------------------------------------------------------------
+    //
+    // Special methods
+    //
+    //-------------------------------------------------------------------------------------------------
+    /**
+     * Attempt to write to the stream using the data contained in this packet
+     * @param outStream The BufferedOutputStream to write to
+     * @return null if the type of this packet prevents it from writing
+     * @return false if this packet is an ACK which closes the stream
+     * @return true if this packet is a DATA packet which keeps the stream open
+     */
+    public Boolean transferTo(BufferedOutputStream outStream) throws IOException {
+        // Do not transfer PREFLIGHT or NAK packet
+        if (this.type == Type.PREFLIGHT || this.type == Type.NAK) return null;
+        // Close the stream if type is ACK
+        if (this.type == Type.ACK) {
+            outStream.close();
+            return false;
+        }
+        // Write and return true if is DATA
+        outStream.write(this.rawData, HEADER_SIZE, this.size - HEADER_SIZE);
+        return true;
+    }
+
+    /**
+     * Convert the data in this packet to a String
+     */
+    public String stringifyData() {
+        return new String(this.rawData, HEADER_SIZE, this.size - HEADER_SIZE);
+    }
+
+    /**
+     * Comparable implementation
+     */
+    @Override
+    public boolean equals(Object o) {
+        if (o == null) return false;
+        if (this == o) return true;
+        if (!(o instanceof MetaPacket)) return false;
+        MetaPacket another = (MetaPacket) o;
+        if (this.idNumber != another.idNumber || this.sequenceNumber != another.sequenceNumber)
+            return false;
+        return true;
+    }
+
+    public int compareTo(MetaPacket another) {
+        return this.sequenceNumber - another.sequenceNumber;
+    }
+
+    /**
+     * Debug
+     */
+    public String toString() {
+        String data = "";
+        if (this.type == Type.PREFLIGHT) {
+            data = "\t\"" + this.stringifyData() + "\"";
+        }
+        return String.format("[ #%d\t%s\tID = %d\tSIZE = %d%s ]",
+                this.sequenceNumber,
+                this.type.name(),
+                this.idNumber,
+                this.size,
+                data
+                );
+    }
 }

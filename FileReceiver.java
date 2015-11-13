@@ -1,4 +1,4 @@
-import java.io.*;
+import java.io.IOException;
 import java.net.*;
 
 public class FileReceiver extends ThreadedRunnable {
@@ -6,14 +6,14 @@ public class FileReceiver extends ThreadedRunnable {
     /**
      * Properties
      */
-    private DatagramSocket socket;
+    private PacketCheckpoint checkpt;
 
     /**
      * Constructor
      */
     public FileReceiver(int port) throws SocketException {
-        // Create listening socket
-        this.socket = new DatagramSocket(port);
+        // Instantiate checkpoint
+        this.checkpt = new PacketCheckpoint(new DatagramSocket(port));
     }
 
     /**
@@ -21,7 +21,7 @@ public class FileReceiver extends ThreadedRunnable {
      */
     @Override
     public void run() {
-        // TODO: Code this part
+        this.checkpt.operate();
     }
 
     /**Main executable method*/
