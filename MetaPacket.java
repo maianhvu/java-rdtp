@@ -10,35 +10,32 @@ public class MetaPacket implements Comparable<MetaPacket> {
      * Constants
      */
     public static final int MAX_PACKET_SIZE = 1000;
-    public static final int HEADER_SIZE = 20;
+    public static final int HEADER_SIZE = 16;
     public static final int MAX_DATA_SIZE = MAX_PACKET_SIZE - HEADER_SIZE;
+    private static final int CHECKSUM_SIZE = Long.SIZE / Byte.SIZE;
+    private static final int OUTFILE_LENGTH_SIZE = Short.SIZE / Byte.SIZE;
 
-    public static final int FLAGS_ID_MASK = 0x3FFFFFFF;
-
-    public static final int CHECKSUM_LENGTH = Long.SIZE / Byte.SIZE;
+    public static final int SEQ_MASK = 0x3FFFFFFF;
 
     /**
      * Types
      */
     public enum Type {
-        PREFLIGHT,
-        DATA,
         ACK,
-        NAK;
+        NAK,
+        DATA;
     }
 
     /**
      * Properties
      */
-    private int size;
+    private int totalSize;
     private Type type;
     private int sequenceNumber;
-    private int idNumber;
+    private String outFile;
     private byte[] rawData;
     private InetSocketAddress address;
     private DatagramPacket packet;
-
-    private byte[] data;
 
     /**
      * Private constructors to be used by static generators
@@ -53,101 +50,95 @@ public class MetaPacket implements Comparable<MetaPacket> {
     /**
      * Create a MetaPacket object with the provided specifications
      */
-    private static MetaPacket create(Type type, int seqNo, int idNo, byte[] data, InetSocketAddress target) throws SocketException {
+    private static MetaPacket create(Type type, int seqNo, String outFile, byte[] data, InetSocketAddress target) throws SocketException {
         // Make an instance
         MetaPacket meta = new MetaPacket();
 
-        // Boolean control variables
-        boolean isHeaderPacket = true;
-        boolean isRawDataCopied = false;
+        // Calculate total packet size, by first taking the metadata size
+        meta.totalSize = HEADER_SIZE + OUTFILE_LENGTH_SIZE + outFile.length();
+        // Pre-calculate max allowed data size to help determined if the data
+        // should be resized
+        int maxAllowedDataSize = MAX_PACKET_SIZE - meta.totalSize;
 
-        if (type.ordinal() < 2 && data != null && data.length > 0) {
-            isHeaderPacket = false;
-            // Truncate data if necessary
-            if (data.length > MAX_DATA_SIZE) {
-                byte[] newData = new byte[MAX_PACKET_SIZE];
-                System.arraycopy(data, 0, newData, HEADER_SIZE, MAX_DATA_SIZE);
-                meta.rawData = newData;
-                isRawDataCopied = true;
-            }
+        // Add data if needed
+        if (data != null && data.length > 0 && type == Type.DATA) {
+            meta.totalSize += data.length;
+            if (meta.totalSize > MAX_PACKET_SIZE)
+                meta.totalSize = MAX_PACKET_SIZE;
         }
 
-        // Setting packet size
-        meta.size = HEADER_SIZE;
-        if (!isHeaderPacket) meta.size += data.length;
-        // If raw data has not been copied, create it
-        if (!isRawDataCopied) {
-            meta.rawData = new byte[meta.size];
-        }
+        // Create raw data array and the ByteBuffer that wraps it
+        meta.rawData = new byte[meta.size];
+        ByteBuffer buffer = ByteBuffer.wrap(rawData);
 
-        // Create a byte buffer that wraps everything
-        ByteBuffer buffer = ByteBuffer.wrap(meta.rawData);
-
-        // Reserve checksum
+        // Reserver checksum
         buffer.putLong(0);
 
-        // Put data length
-        buffer.putInt(meta.size);
+        // Put total packet size
+        buffer.putInt(meta.totalSize);
 
-        // Put sequence number
-        meta.sequenceNumber = (type == Type.PREFLIGHT) ? 0 : seqNo;
-        buffer.putInt(meta.sequenceNumber);
+        // Put type and sequence number
+        int typeAndSequence = (type.ordinal() << 30) | (seqNo & SEQ_MASK);
+        buffer.putInt(typeAndSequence);
 
-        // Put flags
-        meta.idNumber = (type == Type.PREFLIGHT) ? 0 : idNo;
-        int flags = (meta.idNumber & FLAGS_ID_MASK) | (type.ordinal() << 30);
-        meta.type = type;
-        buffer.putInt(flags);
+        // Put output file name length and its content
+        buffer.putShort((short) outFile.length);
+        buffer.put(outFile.getBytes());
 
         // Put data
-        if (!isHeaderPacket && !isRawDataCopied) {
-            buffer.put(data);
-        }
+        buffer.put(data, 0, Math.min(maxAllowedDataSize, data.length));
 
         // Calculate checksum
         CRC32 crc = new CRC32();
         crc.reset();
-        crc.update(meta.rawData, CHECKSUM_LENGTH, meta.size - CHECKSUM_LENGTH);
+        crc.update(meta.rawData, CHECKSUM_SIZE, meta.totalSize - CHECKSUM_SIZE);
+        // Rewind and put checksum
         buffer.rewind();
         buffer.putLong(crc.getValue());
 
-        // Create the datagram packet associated with this MetaPacket
-        meta.packet = new DatagramPacket(meta.rawData, meta.size, target);
-        // Set target
-        meta.address = target;
+        // Set packet
+        meta.packet = new DatagramPacket(meta.rawData, meta.totalSize, target);
 
-        // Return the meta packet finally
+        // Set other misc data
+        meta.address = target;
+        meta.outFile = outFile;
+
         return meta;
+    }
+
+    /**
+     * Return the maximum data buffer size for a packet sending to this output file
+     * @param outFile The path of the outFile that is being written to
+     * @return the max size in bytes of the data
+     */
+    public static int maxDataSize(String outFile) {
+        return MAX_DATA_SIZE - Short.SIZE / Byte.SIZE - outFile.length;
     }
 
     /**
      * Individual methods to create different kinds of MetaPackets
      */
-    public static MetaPacket createPreflight(String outFile, InetSocketAddress target) throws SocketException {
-        return create(Type.PREFLIGHT, 0, 0, outFile.getBytes(), target);
+    public static MetaPacket createData(int seqNo, String outFile, byte[] data, InetSocketAddress target) throws SocketException {
+        return create(Type.DATA, seqNo, outFile, data, target);
     }
 
-    public static MetaPacket createData(int seqNo, int idNo, byte[] data, InetSocketAddress target) throws SocketException {
-        return create(Type.DATA, seqNo, idNo, data, target);
+    public static MetaPacket createACK(int seqNo, String outFile, InetSocketAddress target) throws SocketException {
+        return create(Type.ACK, seqNo, outFile, null, target);
     }
 
-    public static MetaPacket createACK(int seqNo, int idNo, InetSocketAddress target) throws SocketException {
-        return create(Type.ACK, seqNo, idNo, null, target);
-    }
-
-    public static MetaPacket createNAK(int seqNo, int idNo, InetSocketAddress target) throws SocketException {
-        return create(Type.NAK, seqNo, idNo, null, target);
+    public static MetaPacket createNAK(int seqNo, String outFile, InetSocketAddress target) throws SocketException {
+        return create(Type.NAK, seqNo, outFile, null, target);
     }
 
     /**
      * ACK and NAK as a reply
      */
     public static MetaPacket createACK(MetaPacket original) throws SocketException {
-        return createACK(original.sequenceNumber, original.idNumber, original.address);
+        return createACK(original.sequenceNumber, original.outFile, original.address);
     }
 
     public static MetaPacket createNAK(MetaPacket original) throws SocketException {
-        return createNAK(original.sequenceNumber, original.idNumber, original.address);
+        return createNAK(original.sequenceNumber, original.outFile, original.address);
     }
 
     //-------------------------------------------------------------------------------------------------
@@ -180,30 +171,27 @@ public class MetaPacket implements Comparable<MetaPacket> {
                 // Read in packet size
                 ByteBuffer buffer = ByteBuffer.wrap(meta.rawData);
                 long checksum = buffer.getLong();
-                meta.size = buffer.getInt();
+                meta.totalSize = buffer.getInt();
                 // Skip corrupted length
-                if (meta.size > MAX_PACKET_SIZE || meta.size < HEADER_SIZE) {
-                    System.out.printf("Info: Packet size too small (%d)\n", meta.size);
+                if (meta.size > MAX_PACKET_SIZE || meta.size < HEADER_SIZE + OUTFILE_LENGTH_SIZE) {
+                    System.out.printf("Info: Packet size too small (%d), discarding\n", meta.size);
                     continue;
                 }
 
                 // Checksum
                 CRC32 crc = new CRC32();
                 crc.reset();
-                crc.update(meta.rawData, CHECKSUM_LENGTH, meta.size - CHECKSUM_LENGTH);
+                crc.update(meta.rawData, CHECKSUM_SIZE, meta.totalSize - CHECKSUM_SIZE);
                 // Checksum mismatch, skip
                 if (crc.getValue() != checksum) {
-                    System.out.printf("Info: Checksum mismatch\n\tExpected: %d\n\tActual: %d\n", crc.getValue(), checksum);
+                    System.out.printf("Info: Checksum mismatch, discarding\n\tExpected: %d\n\tActual: %d\n", crc.getValue(), checksum);
                     continue;
                 }
 
-                // Read in sequence number
-                meta.sequenceNumber = buffer.getInt();
-
-                // Read in flags
-                int flags = buffer.getInt();
-                meta.idNumber = flags & FLAGS_ID_MASK;
-                int typeID = flags >>> 30;
+                // Read in type and sequence number
+                int typeAndSequence = buffer.getInt();
+                meta.sequenceNumber = typeAndSequenceNumber & SEQ_MASK;
+                int typeID = typeAndSequence >>> 30;
                 meta.type = Type.values()[typeID];
 
                 // Check if type is to be expected
@@ -213,10 +201,9 @@ public class MetaPacket implements Comparable<MetaPacket> {
                     continue;
                 }
 
-                // Resize packet if needed: if is neither ACK or NAK
-                // and if the size differs
-                if (typeID <= 1 && meta.size != meta.rawData.length) {
-                    byte[] newData = new byte[meta.size];
+                // Resize packet if needed
+                if (meta.totalSize != meta.rawData.length) {
+                    byte[] newData = new byte[meta.totalSize];
                     System.arraycopy(meta.rawData, 0, newData, 0, newData.length);
                     // Save buffer offset
                     int offset = buffer.position();
@@ -225,6 +212,10 @@ public class MetaPacket implements Comparable<MetaPacket> {
                     buffer = ByteBuffer.wrap(meta.rawData);
                     buffer.position(offset);
                 }
+
+                // Get output file
+                int outFileLength = (int) buffer.getShort();
+                meta.outFile = new String(meta.rawData, buffer.position(), outFileLength);
 
                 // Set address
                 meta.address = (InetSocketAddress) meta.packet.getSocketAddress();

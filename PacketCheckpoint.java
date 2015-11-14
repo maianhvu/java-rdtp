@@ -42,7 +42,6 @@ public class PacketCheckpoint {
                 incoming = MetaPacket.expectReply(
                         this.receiver,
                         EnumSet.of(
-                            MetaPacket.Type.PREFLIGHT,
                             MetaPacket.Type.DATA,
                             MetaPacket.Type.ACK)
                         );
